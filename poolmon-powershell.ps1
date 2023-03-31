@@ -38,7 +38,6 @@
 	"2019-07-24T12:22:07","FMfn","199878016","fltmgr.sys","NAME_CACHE_NODE structure"
 
 #>
-
 param (
 	[string]$tags,
 	[string]$values,
@@ -46,10 +45,9 @@ param (
 	[string]$sortdir = 'Descending',
 	[int]$top = 0,
 	[string]$view = 'table',
-	[string]$tagfile = 'pooltag.txt',
+	[string]$tagfile = 'pooltag.txt', #wanted tags
 	[int]$loop = 0
 )
-
 Add-Type -TypeDefinition @'
 using System;
 using System.Runtime.InteropServices;
@@ -85,87 +83,107 @@ namespace Win32 {
 	}
 }
 '@
+#*****************************************************************
+#      best practice is to use strict mode
+#*****************************************************************
+Set-StrictMode -Version 3.0
 
+#*****************************************************************
+# * define the function
+#*****************************************************************
+<#
+.DESCRIPTION "Get-Pool function"
+#>
 Function Get-Pool() {
+	$tagFileHash = $null
 	if ($tagfile) {
 		if (Test-Path $tagfile) {
-			$tagFileHash = $null
-			$tagFileHash = new-object System.Collections.Hashtable
-			foreach($line in Get-Content $tagfile) {
-				if(($line.trim() -ne '') -and ($line.trim() -like '*-*-*') -and ($line.trim().SubString(0,2) -ne '//') -and ($line.trim().SubString(0,3) -ne 'rem')){
-					$t,$b,$d = $line.split('-')
+			$tagFileHash = New-Object System.Collections.Hashtable
+			foreach ($line in Get-Content $tagfile) {
+				if (($line.trim() -ne '') -and ($line.trim() -like '*-*-*') -and ($line.trim().SubString(0, 2) -ne '//') -and ($line.trim().SubString(0, 3) -ne 'rem')) {
+					$t, $b, $d = $line.split('-')
 					$t = $t.trim()
 					$b = $b.trim()
 					$d = $d.trim()
 					if (!($tagFileHash.containsKey($t))) {
-						$tagFileHash.Add($t,"$b|$d")
+						$tagFileHash.Add($t, "$b|$d")
 					}
 				}
 			}
 		}
 	}
-	$ptrSize = 0
-	while ($true) {
-		[IntPtr]$ptr = [System.Runtime.InteropServices.Marshal]::AllocHGlobal($ptrSize)
-		$ptrLength = New-Object Int
-		$tagInfo = [Win32.PInvoke]::NtQuerySystemInformation([Win32.SYSTEM_INFORMATION_CLASS]::SystemPoolTagInformation, $ptr, $ptrSize, [ref]$ptrLength)
-		if ($tagInfo -eq [Win32.NT_STATUS]::STATUS_INFO_LENGTH_MISMATCH) {
-			[System.Runtime.InteropServices.Marshal]::FreeHGlobal($ptr)
-			$ptrSize = [System.Math]::Max($ptrSize,$ptrLength)
-		}
-		elseif ($tagInfo -eq [Win32.NT_STATUS]::STATUS_SUCCESS) {
-			break
-		}
-		else {
-			[System.Runtime.InteropServices.Marshal]::FreeHGlobal($ptr)
-			"An error occurred getting SystemPoolTagInformation"
-			return
-		}
-	}
-	$tags = $tags -Split ','
-	$datetime = Get-Date
-	$systemPoolTag = New-Object Win32.SYSTEM_POOLTAG
-	$systemPoolTag = $systemPoolTag.GetType()
-	$size = [System.Runtime.InteropServices.Marshal]::SizeOf([type]([Win32.SYSTEM_POOLTAG]))
-	$offset = $ptr.ToInt64()
-	$count = [System.Runtime.InteropServices.Marshal]::ReadInt32($offset)
-	$offset = $offset + [System.IntPtr]::Size
-	for ($i=0; $i -lt $count; $i++){
-		$entryPtr = New-Object System.Intptr -ArgumentList $offset
-		$entry = [system.runtime.interopservices.marshal]::PtrToStructure($entryPtr,[type]$systemPoolTag)
-		$tag = [System.Text.Encoding]::Default.GetString($entry.Tag)
-		if (!$tags -or ($tags -and $tags -contains $tag)) {
-			$tagResult = $null
-			$tagResult = [PSCustomObject]@{
-				DateTime = Get-Date -Format s $datetime
-				DateTimeUTC = Get-Date -Format s $datetime.ToUniversalTime()
-				Tag = $tag
-				PagedAllocs = [int64]$entry.PagedAllocs
-				PagedFrees = [int64]$entry.PagedFrees
-				PagedDiff = [int64]$entry.PagedAllocs - [int64]$entry.PagedFrees
-				PagedUsedBytes = [int64]$entry.PagedUsed
-				NonPagedAllocs = [int64]$entry.NonPagedAllocs
-				NonPagedFrees = [int64]$entry.NonPagedFrees
-				NonPagedDiff = [int64]$entry.NonPagedAllocs - [int64]$entry.NonPagedFrees
-				NonPagedUsedBytes = [int64]$entry.NonPagedUsed
-				TotalUsedBytes = [int64]$entry.PagedUsed + [int64]$entry.NonPagedUsed
+
+	#set the initial pointer size to zero to force initial request to fail
+	$bufSize, $bufLength = 0
+
+	#fetch pool information from windows API
+	try {
+		while ($true) {
+			[IntPtr]$bufptr = [System.Runtime.InteropServices.Marshal]::AllocHGlobal($bufSize)
+			$tagInfo = [Win32.PInvoke]::NtQuerySystemInformation([Win32.SYSTEM_INFORMATION_CLASS]::SystemPoolTagInformation, $bufptr, $bufSize, [ref]$bufLength)
+			if ($tagInfo -eq [Win32.NT_STATUS]::STATUS_INFO_LENGTH_MISMATCH) {
+				# as the amount of data is variable there is some negotiation from the API to find the correct buffer length
+				[System.Runtime.InteropServices.Marshal]::FreeHGlobal($bufptr)		
+				$bufSize = [System.Math]::Max($bufSize, $bufLength)
+			} elseif ($tagInfo -eq [Win32.NT_STATUS]::STATUS_SUCCESS) {
+				# correct buffer length has been found and data has been returned
+				break
+			} else {
+				throw 'An error occurred getting SystemPoolTagInformation'
 			}
-			if ($tagFileHash) {
-				if ($tagFileHash.containsKey($tag)) {
-					$Bin,$BinDesc = $tagFileHash.$tag.split('|')
-					$tagResult | Add-Member NoteProperty 'Binary' $Bin
-					$tagResult | Add-Member NoteProperty 'Description' $BinDesc
-				} else {
-					$tagResult | Add-Member NoteProperty 'Binary' ''
-					$tagResult | Add-Member NoteProperty 'Description' ''
+		}
+
+		$tags = $tags -Split ','
+		$datetime = Get-Date
+		$systemPoolTag = New-Object Win32.SYSTEM_POOLTAG
+		$systemPoolTag = $systemPoolTag.GetType()
+		$size = [System.Runtime.InteropServices.Marshal]::SizeOf([type]([Win32.SYSTEM_POOLTAG]))
+		$offset = $bufptr.ToInt64()
+		$count = [System.Runtime.InteropServices.Marshal]::ReadInt32($offset)
+		$offset = $offset + [System.IntPtr]::Size
+		for ($i = 0; $i -lt $count; $i++) {
+			$entryPtr = New-Object System.Intptr -ArgumentList $offset
+			$entry = [system.runtime.interopservices.marshal]::PtrToStructure($entryPtr, [type]$systemPoolTag)
+			$tag = [System.Text.Encoding]::Default.GetString($entry.Tag)
+			if (!$tags -or ($tags -and $tags -contains $tag)) {
+				$tagResult = $null
+				$tagResult = [PSCustomObject]@{
+					DateTime          = Get-Date -Format s $datetime
+					DateTimeUTC       = Get-Date -Format s $datetime.ToUniversalTime()
+					Tag               = $tag
+					PagedAllocs       = [int64]$entry.PagedAllocs
+					PagedFrees        = [int64]$entry.PagedFrees
+					PagedDiff         = [int64]$entry.PagedAllocs - [int64]$entry.PagedFrees
+					PagedUsedBytes    = [int64]$entry.PagedUsed
+					NonPagedAllocs    = [int64]$entry.NonPagedAllocs
+					NonPagedFrees     = [int64]$entry.NonPagedFrees
+					NonPagedDiff      = [int64]$entry.NonPagedAllocs - [int64]$entry.NonPagedFrees
+					NonPagedUsedBytes = [int64]$entry.NonPagedUsed
+					TotalUsedBytes    = [int64]$entry.PagedUsed + [int64]$entry.NonPagedUsed
 				}
+				if ($tagFileHash) {
+					if ($tagFileHash.containsKey($tag)) {
+						$Bin, $BinDesc = $tagFileHash.$tag.split('|')
+						$tagResult | Add-Member NoteProperty 'Binary' $Bin
+						$tagResult | Add-Member NoteProperty 'Description' $BinDesc
+					} else {
+						$tagResult | Add-Member NoteProperty 'Binary' ''
+						$tagResult | Add-Member NoteProperty 'Description' ''
+					}
+				}
+				#--- output the entry
+				$tagResult
 			}
-			$tagResult
+			$offset = $offset + $size
 		}
-		$offset = $offset + $size
+	} finally {
+		#always free the buffer so as not to cause a memoryleak
+		[System.Runtime.InteropServices.Marshal]::FreeHGlobal($bufptr)
 	}
-	[System.Runtime.InteropServices.Marshal]::FreeHGlobal($ptr)
 }
+
+#*****************************************************************
+# build the expression of the function
 $expression = 'Get-Pool'
 if ($sortvalue) {
 	$expression += "|Sort-Object -Property $sortvalue"
@@ -186,6 +204,8 @@ if ($view -eq 'csv') {
 } elseif ($view -eq 'table') {
 	$expression += '|Format-Table *'
 }
+
+#------------invoke the function
 if ($loop -gt 0 -and $view -ne 'grid') {
 	$loopcount = 0
 	while ($true) {
