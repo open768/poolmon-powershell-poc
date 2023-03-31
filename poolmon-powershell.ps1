@@ -117,7 +117,7 @@ Function Get-Pool() {
 	$bufSize, $bufLength = 0
 
 	try {
-		#fetch pool information from windows API
+		#-------------fetch pool information from windows API
 		while ($true) {
 			[IntPtr]$bufptr = [System.Runtime.InteropServices.Marshal]::AllocHGlobal($bufSize)
 			$tagInfo = [Win32.PInvoke]::NtQuerySystemInformation([Win32.SYSTEM_INFORMATION_CLASS]::SystemPoolTagInformation, $bufptr, $bufSize, [ref]$bufLength)
@@ -133,6 +133,7 @@ Function Get-Pool() {
 			}
 		}
 
+		#------------ work out information from the populated buffer
 		$tags = $tags -Split ','
 		$datetime = Get-Date
 		$systemPoolTag = New-Object Win32.SYSTEM_POOLTAG
@@ -141,6 +142,9 @@ Function Get-Pool() {
 		$offset = $bufptr.ToInt64()
 		$count = [System.Runtime.InteropServices.Marshal]::ReadInt32($offset)
 		$offset = $offset + [System.IntPtr]::Size
+
+		#------------parse the entries
+		$output = @()
 		for ($i = 0; $i -lt $count; $i++) {
 			$entryPtr = New-Object System.Intptr -ArgumentList $offset
 			$entry = [system.runtime.interopservices.marshal]::PtrToStructure($entryPtr, [type]$systemPoolTag)
@@ -172,7 +176,7 @@ Function Get-Pool() {
 					}
 				}
 				#--- output the entry
-				$tagResult
+				$output += $tagResult
 			}
 			$offset = $offset + $size
 		}
@@ -180,6 +184,9 @@ Function Get-Pool() {
 		#always free the buffer so as not to cause a memoryleak
 		[System.Runtime.InteropServices.Marshal]::FreeHGlobal($bufptr)
 	}
+
+	#---faster to outut an array rather than each line
+	return $output
 }
 
 #*****************************************************************
