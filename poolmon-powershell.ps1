@@ -116,8 +116,8 @@ Function Get-Pool() {
 	#set the initial pointer size to zero to force initial request to fail
 	$bufSize, $bufLength = 0
 
-	#fetch pool information from windows API
 	try {
+		#fetch pool information from windows API
 		while ($true) {
 			[IntPtr]$bufptr = [System.Runtime.InteropServices.Marshal]::AllocHGlobal($bufSize)
 			$tagInfo = [Win32.PInvoke]::NtQuerySystemInformation([Win32.SYSTEM_INFORMATION_CLASS]::SystemPoolTagInformation, $bufptr, $bufSize, [ref]$bufLength)
