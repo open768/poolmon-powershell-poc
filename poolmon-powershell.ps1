@@ -213,20 +213,14 @@ if ($view -eq 'csv') {
 }
 
 #------------invoke the function
-if ($loop -gt 0 -and $view -ne 'grid') {
-	$loopcount = 0
-	while ($true) {
-		$loopcount++
-		if ($loopcount -eq 1) {
-			Invoke-Expression $expression
-			if ($view -eq 'csv') {
-				$expression += '|Select-Object -skip 1'
-			}
-		} else {
-			Invoke-Expression $expression
-		}
-		Start-Sleep -Seconds $loop
-	}
-} else {
+$loopcount = 0
+while ($true) {
+	$loopcount++
 	Invoke-Expression $expression
+	if (($loop -eq 0) -or ($view -eq 'grid')) {
+		break
+	} elseif (($loopcount -eq 1) -and ($view -eq 'csv')) {
+		$expression += '|Select-Object -skip 1'
+	}
+	Start-Sleep -Seconds $loop
 }
